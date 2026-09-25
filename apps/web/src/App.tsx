@@ -10,9 +10,10 @@ import {
   Tooltip, XAxis, YAxis,
 } from 'recharts'
 import AuthScreen from './AuthScreen'
+import AdminPage from './AdminPage'
 import { api, getSession, setSession, type ApiBalance, type ApiExpense, type ApiGroup, type ApiGroupMember, type ApiSession, type ApiSettlement, type ApiSplit, type ApiUser } from './api'
 
-type Page = 'Overview' | 'Groups' | 'Activity' | 'Reports' | 'Settings'
+type Page = 'Overview' | 'Groups' | 'Activity' | 'Reports' | 'Settings' | 'Admin'
 type Group = { id: string | number; name: string; category: string; members: number; balance: number; updated: string; tint: string; initials: string; kind?: 'group' | 'friend'; currency?: string; memberDetails?: ApiGroupMember[]; balanceRows?: ApiBalance[] }
 type ActivityItem = { id: string | number; title: string; group: string; person: string; amount: number; time: string; icon: 'expense' | 'settled' | 'added'; color: string; currency?: string }
 type Modal = 'expense' | 'group' | 'settle' | null
@@ -315,6 +316,7 @@ function App() {
           <NavItem icon={<Users />} label="Groups" active={page === 'Groups'} onClick={() => setPage('Groups')} count={groups.length} />
           <NavItem icon={<Activity />} label="Activity" active={page === 'Activity'} onClick={() => setPage('Activity')} />
           <NavItem icon={<LayoutGrid />} label="Reports" active={page === 'Reports'} onClick={() => setPage('Reports')} />
+          {user.is_platform_admin && <NavItem icon={<ShieldCheck />} label="Admin" active={page === 'Admin'} onClick={() => setPage('Admin')} />}
         </nav>
 
         <div className="sidebar-group-title"><span className="nav-label">YOUR GROUPS</span><button className="icon-button mini" title="Create group" onClick={() => setModal('group')}><Plus size={16} /></button></div>
@@ -348,6 +350,7 @@ function App() {
             <NavItem icon={<Activity />} label="Activity" active={page === 'Activity'} onClick={() => { setPage('Activity'); setNavOpen(false) }} />
             <NavItem icon={<LayoutGrid />} label="Reports" active={page === 'Reports'} onClick={() => { setPage('Reports'); setNavOpen(false) }} />
             <NavItem icon={<Settings />} label="Settings" active={page === 'Settings'} onClick={() => { setPage('Settings'); setNavOpen(false) }} />
+            {user.is_platform_admin && <NavItem icon={<ShieldCheck />} label="Admin" active={page === 'Admin'} onClick={() => { setPage('Admin'); setNavOpen(false) }} />}
           </nav>
           <p className="nav-label drawer-groups-label">YOUR GROUPS</p>
           {groups.map((group) => <button className="sidebar-group" key={group.id} onClick={() => { setPage('Groups'); setQuery(group.name); setNavOpen(false) }}><span className={`tiny-group-icon ${group.tint}`}>{group.initials.slice(0, 1)}</span><span>{group.name}</span></button>)}
@@ -372,6 +375,7 @@ function App() {
           {page === 'Activity' && <ActivityPage activity={activity} />}
           {page === 'Reports' && <ReportsPage totalBalance={totalBalance} chartData={monthlyData} breakdown={spendingBreakdown} />}
           {page === 'Settings' && <SettingsPage theme={theme} setTheme={setTheme} onToast={setToast} />}
+          {page === 'Admin' && user.is_platform_admin && <AdminPage />}
         </div>
       </main>
 

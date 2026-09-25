@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 import jwt
+import httpx
 from fastapi import Header, HTTPException, status
 
 from services.common.config import env
@@ -41,9 +42,23 @@ def require_user_id(authorization: str | None = Header(default=None)) -> UUID:
         )
         if claims.get("typ") != "access":
             raise unauthorized
-        return UUID(claims["sub"])
+        user_id = UUID(claims["sub"])
     except (jwt.PyJWTError, ValueError, KeyError):
         raise unauthorized from None
+
+    try:
+        response = httpx.get(
+            f"{env('AUTH_SERVICE_URL', 'http://auth-service:8001')}/internal/users/{user_id}",
+            headers={"X-Internal-Token": env("SERVICE_INTERNAL_TOKEN")},
+            timeout=2.0,
+        )
+    except httpx.HTTPError:
+        raise HTTPException(status_code=503, detail="Authentication service is unavailable") from None
+    if response.status_code == 404:
+        raise unauthorized
+    if response.is_error:
+        raise HTTPException(status_code=503, detail="Authentication service validation failed")
+    return user_id
 
 
 def require_internal_token(token: str | None = Header(default=None, alias="X-Internal-Token")) -> None:
