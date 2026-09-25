@@ -3,6 +3,7 @@ export type ApiUser = {
   email: string
   display_name: string
   is_pro: boolean
+  is_platform_admin?: boolean
 }
 
 export type ApiSession = {
@@ -148,6 +149,15 @@ export const api = {
     return session
   },
 
+  async acceptInvitation(token: string, password: string): Promise<ApiSession> {
+    const session = await request<ApiSession>('/auth/accept-invitation', {
+      method: 'POST',
+      body: jsonBody({ token, password }),
+    }, false)
+    setSession(session)
+    return session
+  },
+
   async currentUser(): Promise<ApiUser> {
     return request<ApiUser>('/auth/me')
   },
@@ -168,5 +178,13 @@ export const api = {
 
   post<T>(path: string, body: unknown): Promise<T> {
     return request<T>(path, { method: 'POST', body: jsonBody(body) })
+  },
+
+  patch<T>(path: string, body: unknown): Promise<T> {
+    return request<T>(path, { method: 'PATCH', body: jsonBody(body) })
+  },
+
+  delete<T>(path: string): Promise<T> {
+    return request<T>(path, { method: 'DELETE' })
   },
 }

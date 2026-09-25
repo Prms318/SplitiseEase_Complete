@@ -7,6 +7,7 @@ export default defineConfig({
     host: '0.0.0.0',
     proxy: {
       '/auth': { target: 'http://localhost:8080', changeOrigin: true },
+      '/admin': { target: 'http://localhost:8080', changeOrigin: true },
       '/api': { target: 'http://localhost:8080', changeOrigin: true },
       '/sync': { target: 'http://localhost:8080', changeOrigin: true },
     },

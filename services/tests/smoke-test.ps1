@@ -17,6 +17,13 @@ $userA = Post-Json "/auth/register" @{ email = "a$suffix@example.com"; password 
 $userB = Post-Json "/auth/register" @{ email = "b$suffix@example.com"; password = $password; display_name = "Smoke Test B" }
 $outsider = Post-Json "/auth/register" @{ email = "x$suffix@example.com"; password = $password; display_name = "Smoke Test X" }
 Write-Host "Auth registration passed."
+$ordinaryUserAdminDenied = $false
+try {
+    Invoke-RestMethod -Method Get -Uri "$BaseUrl/admin/summary" `
+        -Headers @{ Authorization = "Bearer $($userA.access_token)" } | Out-Null
+} catch {
+    $ordinaryUserAdminDenied = ([int]$_.Exception.Response.StatusCode -eq 403)
+}
 
 $oldRefreshToken = $userA.refresh_token
 $rotated = Post-Json "/auth/refresh" @{ refresh_token = $oldRefreshToken }
@@ -117,6 +124,7 @@ $checks = [ordered]@{
     retryReturnedSameExpense = ($push1.results[0].result.id -eq $push2.results[0].result.id)
     refreshTokenRotated = ($rotated.refresh_token -ne $oldRefreshToken)
     oldRefreshTokenRejected = $oldRefreshRejected
+    ordinaryUserDeniedAdminApi = $ordinaryUserAdminDenied
     cursorAdvanced = ($pull.cursor -gt 0)
     pulledAtLeastOneChange = ($pull.changes.Count -gt 0)
     timestampNormalizedToUtc = ($push1.results[0].result.occurred_at -eq "2026-09-25T14:00:00Z")
