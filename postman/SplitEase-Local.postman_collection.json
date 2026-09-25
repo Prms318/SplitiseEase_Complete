@@ -1,0 +1,245 @@
+{
+  "info": {
+    "name": "SplitEase Local API",
+    "description": "Public Auth, Ledger, friend-expense, settlement, and offline-sync APIs. Run requests in order after importing the matching local environment. Internal service-only routes are intentionally excluded.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{accessToken}}", "type": "string" }]
+  },
+  "item": [
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Gateway health",
+          "request": { "method": "GET", "url": "{{baseUrl}}/health", "auth": { "type": "noauth" } },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Gateway is healthy', function () { pm.response.to.have.status(200); });"] } }]
+        }
+      ]
+    },
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Register account A",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{$randomEmail}}\",\n  \"password\": \"{{password}}\",\n  \"display_name\": \"{{displayName}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/auth/register",
+            "auth": { "type": "noauth" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Account registered', function () { pm.response.to.have.status(201); });",
+            "const data = pm.response.json();",
+            "pm.environment.set('email', data.user.email);",
+            "pm.environment.set('userId', data.user.id);",
+            "pm.environment.set('accessToken', data.access_token);",
+            "pm.environment.set('refreshToken', data.refresh_token);"
+          ] } }]
+        },
+        {
+          "name": "Register friend account B",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{$randomEmail}}\",\n  \"password\": \"{{password}}\",\n  \"display_name\": \"{{friendDisplayName}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/auth/register",
+            "auth": { "type": "noauth" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Friend account registered', function () { pm.response.to.have.status(201); });",
+            "const data = pm.response.json();",
+            "pm.environment.set('friendEmail', data.user.email);",
+            "pm.environment.set('friendUserId', data.user.id);"
+          ] } }]
+        },
+        {
+          "name": "Login account A",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/auth/login",
+            "auth": { "type": "noauth" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Login succeeds', function () { pm.response.to.have.status(200); });",
+            "const data = pm.response.json();",
+            "pm.environment.set('accessToken', data.access_token);",
+            "pm.environment.set('refreshToken', data.refresh_token);"
+          ] } }]
+        },
+        {
+          "name": "Get current user",
+          "request": { "method": "GET", "url": "{{baseUrl}}/auth/me" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Current account is returned', function () { pm.response.to.have.status(200); });"] } }]
+        },
+        {
+          "name": "Rotate refresh token",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/auth/refresh",
+            "auth": { "type": "noauth" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Refresh token rotates', function () { pm.response.to.have.status(200); });",
+            "const data = pm.response.json();",
+            "pm.environment.set('accessToken', data.access_token);",
+            "pm.environment.set('refreshToken', data.refresh_token);"
+          ] } }]
+        }
+      ]
+    },
+    {
+      "name": "Groups and Ledger",
+      "item": [
+        {
+          "name": "Create group",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"name\": \"{{groupName}}\",\n  \"currency\": \"{{currency}}\",\n  \"member_ids\": []\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/groups"
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Group created', function () { pm.response.to.have.status(201); });",
+            "pm.environment.set('groupId', pm.response.json().id);"
+          ] } }]
+        },
+        {
+          "name": "List my groups",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/groups" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Only my groups are listed', function () { pm.response.to.have.status(200); });"] } }]
+        },
+        {
+          "name": "Add friend to group",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"user_id\": \"{{friendUserId}}\",\n  \"role\": \"member\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/members"
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Friend added to group', function () { pm.response.to.have.status(201); });"] } }]
+        },
+        {
+          "name": "Create group expense",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"client_mutation_id\": \"{{groupMutationId}}\",\n  \"description\": \"Postman group dinner\",\n  \"amount_minor\": 3600,\n  \"currency\": \"{{currency}}\",\n  \"split_method\": \"exact\",\n  \"paid_by_user_id\": \"{{userId}}\",\n  \"splits\": [\n    {\"user_id\": \"{{userId}}\", \"owed_minor\": 1800},\n    {\"user_id\": \"{{friendUserId}}\", \"owed_minor\": 1800}\n  ]\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/expenses"
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.environment.set('groupMutationId', pm.variables.replaceIn('{{$guid}}'));"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('Group expense created', function () { pm.response.to.have.status(201); });",
+              "pm.environment.set('expenseId', pm.response.json().id);"
+            ] } }
+          ]
+        },
+        {
+          "name": "List group expenses",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/expenses?limit=50" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Group expense list is returned', function () { pm.response.to.have.status(200); });"] } }]
+        },
+        {
+          "name": "Get group balances",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/balances" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Balances are calculated', function () { pm.response.to.have.status(200); });"] } }]
+        },
+        {
+          "name": "Record settlement",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"idempotency_key\": \"{{settlementKey}}\",\n  \"payer_user_id\": \"{{friendUserId}}\",\n  \"payee_user_id\": \"{{userId}}\",\n  \"amount_minor\": 1800,\n  \"currency\": \"{{currency}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/settlements"
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.environment.set('settlementKey', pm.variables.replaceIn('{{$guid}}'));"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Settlement recorded', function () { pm.response.to.have.status(201); });"] } }
+          ]
+        },
+        {
+          "name": "Create direct friend expense",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"client_mutation_id\": \"{{friendMutationId}}\",\n  \"description\": \"Coffee with a friend\",\n  \"amount_minor\": 1250,\n  \"currency\": \"{{currency}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/api/v1/friends/{{friendUserId}}/expenses"
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": ["pm.environment.set('friendMutationId', pm.variables.replaceIn('{{$guid}}'));"] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('Direct friend expense created', function () { pm.response.to.have.status(201); });",
+              "pm.environment.set('friendGroupId', pm.response.json().group_id);"
+            ] } }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "Offline Sync",
+      "item": [
+        {
+          "name": "Push offline group expense",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"device_id\": \"{{deviceId}}\",\n  \"mutations\": [{\n    \"client_mutation_id\": \"{{syncMutationId}}\",\n    \"kind\": \"group_expense.create\",\n    \"group_id\": \"{{groupId}}\",\n    \"description\": \"Synced groceries\",\n    \"amount_minor\": 1000,\n    \"currency\": \"{{currency}}\",\n    \"split_method\": \"exact\",\n    \"splits\": [\n      {\"user_id\": \"{{userId}}\", \"owed_minor\": 500},\n      {\"user_id\": \"{{friendUserId}}\", \"owed_minor\": 500}\n    ]\n  }]\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/sync/push"
+          },
+          "event": [
+            { "listen": "prerequest", "script": { "type": "text/javascript", "exec": [
+              "pm.environment.set('syncMutationId', pm.variables.replaceIn('{{$guid}}'));",
+              "pm.environment.set('deviceId', pm.environment.get('deviceId') || pm.variables.replaceIn('{{$guid}}'));"
+            ] } },
+            { "listen": "test", "script": { "type": "text/javascript", "exec": [
+              "pm.test('Offline mutation completed', function () { pm.response.to.have.status(200); });",
+              "const result = pm.response.json().results[0];",
+              "pm.environment.set('syncExpenseId', result.result.id);"
+            ] } }
+          ]
+        },
+        {
+          "name": "Pull changes",
+          "request": { "method": "GET", "url": "{{baseUrl}}/sync/pull?cursor={{cursor}}" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Changes pulled', function () { pm.response.to.have.status(200); });",
+            "pm.environment.set('cursor', String(pm.response.json().cursor));"
+          ] } }]
+        },
+        {
+          "name": "Get mutation status",
+          "request": { "method": "GET", "url": "{{baseUrl}}/sync/mutations/{{syncMutationId}}" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Mutation status is available', function () { pm.response.to.have.status(200); });"] } }]
+        }
+      ]
+    },
+    {
+      "name": "Session",
+      "item": [
+        {
+          "name": "Logout account A",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": { "mode": "raw", "raw": "{\n  \"refresh_token\": \"{{refreshToken}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "url": "{{baseUrl}}/auth/logout",
+            "auth": { "type": "noauth" }
+          },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": [
+            "pm.test('Logout succeeds', function () { pm.response.to.have.status(204); });",
+            "pm.environment.unset('accessToken');",
+            "pm.environment.unset('refreshToken');"
+          ] } }]
+        }
+      ]
+    }
+  ]
+}

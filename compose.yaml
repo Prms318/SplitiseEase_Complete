@@ -1,0 +1,145 @@
+name: splitease
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Copy services/.env.example to services/.env and set passwords}
+      MYSQL_ROOT_HOST: "%"
+      AUTH_DB_PASSWORD: ${AUTH_DB_PASSWORD:?Set AUTH_DB_PASSWORD}
+      LEDGER_DB_PASSWORD: ${LEDGER_DB_PASSWORD:?Set LEDGER_DB_PASSWORD}
+      SYNC_DB_PASSWORD: ${SYNC_DB_PASSWORD:?Set SYNC_DB_PASSWORD}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_0900_ai_ci", "--default-time-zone=+00:00"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./infra/mysql/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    networks: [backend]
+
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    networks: [backend]
+
+  auth-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:
+        SERVICE_NAME: auth
+    restart: unless-stopped
+    command: ["sh", "-c", "alembic -c services/auth/alembic.ini upgrade head && uvicorn services.auth.app.main:app --host 0.0.0.0 --port 8001"]
+    environment:
+      DATABASE_URL: mysql+pymysql://auth_app:${AUTH_DB_PASSWORD}@mysql:3306/splitease_auth
+      JWT_SECRET: ${JWT_SECRET:?Set a long random JWT_SECRET}
+      JWT_ISSUER: splitease-auth
+      SERVICE_INTERNAL_TOKEN: ${SERVICE_INTERNAL_TOKEN:?Set a separate internal service token}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-15}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-30}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+    depends_on:
+      mysql: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8001/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks: [backend]
+
+  ledger-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:
+        SERVICE_NAME: ledger
+    restart: unless-stopped
+    command: ["sh", "-c", "alembic -c services/ledger/alembic.ini upgrade head && uvicorn services.ledger.app.main:app --host 0.0.0.0 --port 8002"]
+    environment:
+      DATABASE_URL: mysql+pymysql://ledger_app:${LEDGER_DB_PASSWORD}@mysql:3306/splitease_ledger
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      JWT_ISSUER: splitease-auth
+      SERVICE_INTERNAL_TOKEN: ${SERVICE_INTERNAL_TOKEN:?Set SERVICE_INTERNAL_TOKEN}
+      AUTH_SERVICE_URL: http://auth-service:8001
+      SYNC_SERVICE_URL: http://sync-service:8003
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+    depends_on:
+      mysql: { condition: service_healthy }
+      auth-service: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8002/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks: [backend]
+
+  sync-service:
+    build:
+      context: .
+      dockerfile: services/Dockerfile
+      args:
+        SERVICE_NAME: sync
+    restart: unless-stopped
+    command: ["sh", "-c", "alembic -c services/sync/alembic.ini upgrade head && uvicorn services.sync.app.main:app --host 0.0.0.0 --port 8003"]
+    environment:
+      DATABASE_URL: mysql+pymysql://sync_app:${SYNC_DB_PASSWORD}@mysql:3306/splitease_sync
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET}
+      JWT_ISSUER: splitease-auth
+      SERVICE_INTERNAL_TOKEN: ${SERVICE_INTERNAL_TOKEN:?Set SERVICE_INTERNAL_TOKEN}
+      LEDGER_SERVICE_URL: http://ledger-service:8002
+      REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:4173}
+    depends_on:
+      mysql: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      ledger-service: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8003/health', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    networks: [backend]
+
+  api-gateway:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    ports:
+      - "${GATEWAY_PORT:-8080}:80"
+    volumes:
+      - ./infra/gateway/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      auth-service: { condition: service_healthy }
+      ledger-service: { condition: service_healthy }
+      sync-service: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    networks: [backend]
+
+volumes:
+  mysql_data:
+  redis_data:
+
+networks:
+  backend:
+    driver: bridge
