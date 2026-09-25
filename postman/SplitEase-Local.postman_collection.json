@@ -117,6 +117,11 @@
           "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Only my groups are listed', function () { pm.response.to.have.status(200); });"] } }]
         },
         {
+          "name": "List group members",
+          "request": { "method": "GET", "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/members" },
+          "event": [{ "listen": "test", "script": { "type": "text/javascript", "exec": ["pm.test('Authorized group members are returned', function () { pm.response.to.have.status(200); });"] } }]
+        },
+        {
           "name": "Add friend to group",
           "request": {
             "method": "POST",
@@ -131,7 +136,7 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"client_mutation_id\": \"{{groupMutationId}}\",\n  \"description\": \"Postman group dinner\",\n  \"amount_minor\": 3600,\n  \"currency\": \"{{currency}}\",\n  \"split_method\": \"exact\",\n  \"paid_by_user_id\": \"{{userId}}\",\n  \"splits\": [\n    {\"user_id\": \"{{userId}}\", \"owed_minor\": 1800},\n    {\"user_id\": \"{{friendUserId}}\", \"owed_minor\": 1800}\n  ]\n}", "options": { "raw": { "language": "json" } } },
+            "body": { "mode": "raw", "raw": "{\n  \"client_mutation_id\": \"{{groupMutationId}}\",\n  \"description\": \"Postman group dinner\",\n  \"amount_minor\": 3600,\n  \"currency\": \"{{currency}}\",\n  \"split_method\": \"exact\",\n  \"paid_by_user_id\": \"{{friendUserId}}\",\n  \"splits\": [\n    {\"user_id\": \"{{userId}}\", \"owed_minor\": 1800},\n    {\"user_id\": \"{{friendUserId}}\", \"owed_minor\": 1800}\n  ]\n}", "options": { "raw": { "language": "json" } } },
             "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/expenses"
           },
           "event": [
@@ -157,7 +162,7 @@
           "request": {
             "method": "POST",
             "header": [{ "key": "Content-Type", "value": "application/json" }],
-            "body": { "mode": "raw", "raw": "{\n  \"idempotency_key\": \"{{settlementKey}}\",\n  \"payer_user_id\": \"{{friendUserId}}\",\n  \"payee_user_id\": \"{{userId}}\",\n  \"amount_minor\": 1800,\n  \"currency\": \"{{currency}}\"\n}", "options": { "raw": { "language": "json" } } },
+            "body": { "mode": "raw", "raw": "{\n  \"idempotency_key\": \"{{settlementKey}}\",\n  \"payer_user_id\": \"{{userId}}\",\n  \"payee_user_id\": \"{{friendUserId}}\",\n  \"amount_minor\": 1800,\n  \"currency\": \"{{currency}}\"\n}", "options": { "raw": { "language": "json" } } },
             "url": "{{baseUrl}}/api/v1/groups/{{groupId}}/settlements"
           },
           "event": [

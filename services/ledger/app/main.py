@@ -126,9 +126,15 @@ def require_member(session: Session, group_id: UUID, user_id: UUID) -> GroupMemb
 
 
 def require_known_user(user_id: UUID) -> dict[str, str]:
+    users = require_known_users([user_id])
+    return users[0]
+
+
+def require_known_users(user_ids: list[UUID]) -> list[dict[str, str]]:
     try:
-        response = httpx.get(
-            f"{env('AUTH_SERVICE_URL', 'http://auth-service:8001')}/internal/users/{user_id}",
+        response = httpx.post(
+            f"{env('AUTH_SERVICE_URL', 'http://auth-service:8001')}/internal/users/lookup",
+            json={"user_ids": [str(user_id) for user_id in user_ids]},
             headers={"X-Internal-Token": env("SERVICE_INTERNAL_TOKEN")},
             timeout=3.0,
         )
@@ -295,15 +301,33 @@ def create_group(payload: GroupCreate, user_id: UUID = Depends(require_user_id),
 
 @app.get("/api/v1/groups")
 def list_groups(user_id: UUID = Depends(require_user_id), session: Session = Depends(database_session)):
+    member_count = (
+        select(func.count(GroupMember.id))
+        .where(GroupMember.group_id == Group.id, GroupMember.status == "active")
+        .correlate(Group)
+        .scalar_subquery()
+    )
     rows = session.execute(
-        select(Group, func.count(GroupMember.id))
+        select(Group, member_count)
         .join(GroupMember, GroupMember.group_id == Group.id)
         .where(GroupMember.user_id == str(user_id), GroupMember.status == "active")
-        .group_by(Group.id)
         .order_by(Group.created_at.desc())
     ).all()
     return [{"id": group.id, "name": group.name, "kind": group.kind, "currency": group.currency,
              "member_count": count, "created_at": utc_iso(group.created_at)} for group, count in rows]
+
+
+@app.get("/api/v1/groups/{group_id}/members")
+def list_group_members(group_id: UUID, user_id: UUID = Depends(require_user_id), session: Session = Depends(database_session)):
+    require_member(session, group_id, user_id)
+    members = session.scalars(select(GroupMember).where(
+        GroupMember.group_id == str(group_id),
+        GroupMember.status == "active",
+    ).order_by(GroupMember.joined_at, GroupMember.user_id)).all()
+    profiles = require_known_users([UUID(member.user_id) for member in members])
+    profiles_by_id = {profile["id"]: profile for profile in profiles}
+    return [{"user_id": member.user_id, "display_name": profiles_by_id[member.user_id]["display_name"], "role": member.role}
+            for member in members]
 
 
 @app.post("/api/v1/groups/{group_id}/members", status_code=status.HTTP_201_CREATED)

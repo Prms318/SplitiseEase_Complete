@@ -35,6 +35,10 @@ class RefreshRequest(BaseModel):
     refresh_token: str = Field(min_length=32, max_length=200)
 
 
+class UserLookup(BaseModel):
+    user_ids: list[UUID] = Field(min_length=1, max_length=100)
+
+
 def database_session():
     yield from get_session(SessionLocal)
 
@@ -153,3 +157,12 @@ def internal_user(user_id: UUID, session: Session = Depends(database_session)):
     if user is None or not user.is_active:
         raise HTTPException(status_code=404, detail="User not found")
     return {"id": user.id, "display_name": user.display_name}
+
+
+@app.post("/internal/users/lookup", dependencies=[Depends(require_internal_token)])
+def internal_users_lookup(payload: UserLookup, session: Session = Depends(database_session)):
+    requested = {str(user_id) for user_id in payload.user_ids}
+    users = session.scalars(select(User).where(User.id.in_(requested), User.is_active.is_(True))).all()
+    if {user.id for user in users} != requested:
+        raise HTTPException(status_code=404, detail="One or more users were not found")
+    return [{"id": user.id, "display_name": user.display_name} for user in users]

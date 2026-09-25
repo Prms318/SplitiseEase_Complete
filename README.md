@@ -94,6 +94,25 @@ Invoke-RestMethod http://localhost:8080/health
 
 The public local entry point is `http://localhost:8080`. OpenAPI pages are at `/auth/docs`, `/api/docs`, and `/sync/docs`. Run the API smoke test with `.\services\tests\smoke-test.ps1`. Stop containers without deleting persisted database data with `docker compose --env-file services/.env down`; avoid `down -v` unless you intentionally want to erase local data. MySQL is not published to the host; use a local tunnel or `docker compose exec mysql ...` for administration.
 
+### Seed the demo account and start the connected web app
+
+The dashboard uses the API gateway through the Vite dev proxy. Start the API stack first, then from `apps/web` run `npm run dev`. The default web URL is `http://localhost:5173`; the Vite proxy forwards `/auth`, `/api`, and `/sync` to `http://localhost:8080`.
+
+Seed a reusable local demo account and sample group/friend expenses from the repository root:
+
+```powershell
+.\services\tests\seed-demo.ps1
+```
+
+Default local demo login:
+
+```text
+Email:    demo@splitease.example.com
+Password: LocalDemoPass!2026
+```
+
+The script also creates/reuses `maya@splitease.example.com` and `alex@splitease.example.com`, creates the trip/home groups, and adds sample expenses. It checks existing group names and expense descriptions, so rerunning it does not keep duplicating the fixtures. For any non-local/shared environment, set `$env:SPLITEASE_DEMO_PASSWORD` to a private value before running it, and do not use demo credentials in production.
+
 Postman collection and environment exports are in `postman/`. Import both `SplitEase-Local.postman_collection.json` and `SplitEase-Local.postman_environment.json`, select **SplitEase Local**, then run the collection in order. It registers two fresh test accounts and saves their IDs/tokens into the selected environment. There is no seeded application login; the environment's `password` value is used for the test accounts created by the collection.
 
 The sample environment is only for local development. Before deployment, use unique randomly generated secrets, TLS at the edge, managed database backups, production CORS origins, secret rotation, and a deployment-specific migration/release process. Initial Alembic revisions contain explicit schema DDL; subsequent schema changes must be new, reviewed Alembic revisions.
@@ -142,7 +161,7 @@ The gateway publishes these running routes. Authenticate with `Authorization: Be
 | Auth | `POST /auth/register`, `POST /auth/login` | Public; bcrypt password hashing, access token and refresh token response |
 | Auth | `POST /auth/refresh`, `POST /auth/logout`, `GET /auth/me` | Refresh token rotation/revocation; current user endpoint requires access token |
 | Groups | `POST /api/v1/groups`, `GET /api/v1/groups` | Create a group with active users; list only groups where caller is an active member |
-| Members | `POST /api/v1/groups/{group_id}/members` | Owner/admin only; target user is verified with Auth over the private service network |
+| Members | `GET /api/v1/groups/{group_id}/members`, `POST /api/v1/groups/{group_id}/members` | Listing requires membership; adding a member is owner/admin only and verifies the target user with Auth over the private service network |
 | Group expenses | `POST /api/v1/groups/{group_id}/expenses`, `GET /api/v1/groups/{group_id}/expenses` | Active member; payer and every split participant must be active members; mutation ID is idempotent |
 | Direct friends | `POST /api/v1/friends/{friend_user_id}/expenses` | Authenticated user; creates/reuses a private two-person ledger and equal split |
 | Balances | `GET /api/v1/groups/{group_id}/balances` | Active member only; computed from expenses, splits, and settlements |
