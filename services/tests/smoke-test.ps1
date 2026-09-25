@@ -52,6 +52,11 @@ $group = Post-Json "/api/v1/groups" @{
     member_ids = @($userB.user.id)
 } $userA.access_token
 Write-Host "Group creation passed."
+$groupMembers = Invoke-RestMethod -Method Get -Uri "$BaseUrl/api/v1/groups/$($group.id)/members" `
+    -Headers @{ Authorization = "Bearer $($userA.access_token)" }
+$groupList = Invoke-RestMethod -Method Get -Uri "$BaseUrl/api/v1/groups" `
+    -Headers @{ Authorization = "Bearer $($userA.access_token)" }
+$listedGroup = $groupList | Where-Object { $_.id -eq $group.id } | Select-Object -First 1
 
 $mutationId = [guid]::NewGuid().ToString()
 $pushBody = @{
@@ -106,6 +111,8 @@ try {
 $checks = [ordered]@{
     friendExpenseCreated = ($friendExpense.id -ne $null)
     groupCreated = ($group.id -ne $null)
+    groupMembersListed = ($groupMembers.Count -eq 2 -and @($groupMembers.user_id) -contains $userB.user.id)
+    groupMemberCountMatches = ($listedGroup.member_count -eq 2)
     offlinePushCompleted = ($push1.results[0].status -eq "completed")
     retryReturnedSameExpense = ($push1.results[0].result.id -eq $push2.results[0].result.id)
     refreshTokenRotated = ($rotated.refresh_token -ne $oldRefreshToken)

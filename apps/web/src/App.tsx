@@ -2,60 +2,191 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   Activity, ArrowDownLeft, ArrowLeftRight, ArrowRight, ArrowUpRight,
   Bell, Check, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, CreditCard,
-  Filter, Globe2, Home, LayoutGrid, Menu, Moon, MoreHorizontal,
-  Plus, Search, Settings, ShieldCheck, Sun, Users, Wallet, X,
+  Filter, Globe2, Home, LayoutGrid, LogOut, Menu, Moon, MoreHorizontal,
+  Plus, Search, Settings, ShieldCheck, Sun, Users, X,
 } from 'lucide-react'
 import {
   Area, AreaChart, CartesianGrid, Cell, Pie, PieChart, ResponsiveContainer,
   Tooltip, XAxis, YAxis,
 } from 'recharts'
+import AuthScreen from './AuthScreen'
+import { api, getSession, setSession, type ApiBalance, type ApiExpense, type ApiGroup, type ApiGroupMember, type ApiSession, type ApiSettlement, type ApiSplit, type ApiUser } from './api'
 
 type Page = 'Overview' | 'Groups' | 'Activity' | 'Reports' | 'Settings'
-type Group = { id: number; name: string; category: string; members: number; balance: number; updated: string; tint: string; initials: string }
-type ActivityItem = { id: number; title: string; group: string; person: string; amount: number; time: string; icon: 'expense' | 'settled' | 'added'; color: string }
+type Group = { id: string | number; name: string; category: string; members: number; balance: number; updated: string; tint: string; initials: string; kind?: 'group' | 'friend'; currency?: string; memberDetails?: ApiGroupMember[]; balanceRows?: ApiBalance[] }
+type ActivityItem = { id: string | number; title: string; group: string; person: string; amount: number; time: string; icon: 'expense' | 'settled' | 'added'; color: string; currency?: string }
 type Modal = 'expense' | 'group' | 'settle' | null
-
-const initialGroups: Group[] = [
-  { id: 1, name: 'Copenhagen weekend', category: 'TRIP', members: 6, balance: 248.6, updated: '12 min ago', tint: 'sage', initials: 'CW' },
-  { id: 2, name: 'Apartment 4B', category: 'HOME', members: 3, balance: -86.25, updated: '1 hr ago', tint: 'peach', initials: 'A4' },
-  { id: 3, name: 'Sunday supper club', category: 'FOOD', members: 8, balance: 42.75, updated: 'Yesterday', tint: 'lilac', initials: 'SC' },
-  { id: 4, name: 'Maya & me', category: 'PERSONAL', members: 2, balance: -24, updated: 'Mon, Sep 21', tint: 'sky', initials: 'MM' },
-]
-
-const initialActivity: ActivityItem[] = [
-  { id: 1, title: 'Canal boat tickets', group: 'Copenhagen weekend', person: 'Maya Chen', amount: 174, time: '12 min ago', icon: 'expense', color: 'sage' },
-  { id: 2, title: 'September utilities', group: 'Apartment 4B', person: 'You', amount: 92.5, time: '1 hr ago', icon: 'expense', color: 'peach' },
-  { id: 3, title: 'Settled with Maya', group: 'Maya & me', person: 'You', amount: 38, time: 'Yesterday', icon: 'settled', color: 'blue' },
-  { id: 4, title: 'Dinner at Bar Moro', group: 'Sunday supper club', person: 'Leo Park', amount: 286.4, time: 'Yesterday', icon: 'expense', color: 'lilac' },
-]
-
-const chartData = [
-  { month: 'Apr', owed: 218, owe: 144 }, { month: 'May', owed: 284, owe: 172 },
-  { month: 'Jun', owed: 238, owe: 193 }, { month: 'Jul', owed: 346, owe: 181 },
-  { month: 'Aug', owed: 301, owe: 224 }, { month: 'Sep', owed: 392, owe: 216 },
-]
-
-const breakdown = [
-  { name: 'Trips', value: 48, color: '#91a875' },
-  { name: 'Home', value: 27, color: '#e69d79' },
-  { name: 'Food', value: 18, color: '#b3a2ca' },
-  { name: 'Other', value: 7, color: '#8facc0' },
-]
+type ChartPoint = { month: string; owed: number; owe: number }
+type BreakdownItem = { name: string; value: number; color: string }
 
 const money = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Math.abs(value))
 const searchShortcut = /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘ K' : 'Ctrl K'
+const groupColors = ['#91a875', '#e69d79', '#b3a2ca', '#8facc0', '#d0ad6f', '#81aaa0']
+
+function makeInitials(name: string): string {
+  return name.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'SE'
+}
+
+function relativeTime(value: string): string {
+  const elapsed = Math.max(0, Date.now() - new Date(value).getTime())
+  const minutes = Math.floor(elapsed / 60000)
+  if (minutes < 1) return 'Just now'
+  if (minutes < 60) return `${minutes} min ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours} hr ago`
+  const days = Math.floor(hours / 24)
+  if (days < 7) return `${days} day${days === 1 ? '' : 's'} ago`
+  return new Date(value).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+}
+
+async function loadWorkspaceData(user: ApiUser): Promise<{ groups: Group[]; activity: ActivityItem[]; chartData: ChartPoint[]; breakdown: BreakdownItem[] }> {
+  const summaries = await api.get<ApiGroup[]>('/api/v1/groups')
+  const snapshots = await Promise.all(summaries.map(async (summary, index) => {
+    const [memberDetails, balanceResponse, expenses] = await Promise.all([
+      api.get<ApiGroupMember[]>(`/api/v1/groups/${summary.id}/members`),
+      api.get<{ balances: ApiBalance[] }>(`/api/v1/groups/${summary.id}/balances`),
+      api.get<ApiExpense[]>(`/api/v1/groups/${summary.id}/expenses?limit=100`),
+    ])
+    const friend = memberDetails.find((member) => member.user_id !== user.id)
+    const name = summary.kind === 'friend' && friend ? `${friend.display_name} & you` : summary.name
+    const ownNet = balanceResponse.balances.find((balance) => balance.user_id === user.id)?.net_minor ?? 0
+    const mostRecent = expenses[0]?.created_at ?? summary.created_at
+    return {
+      group: {
+        id: summary.id,
+        name,
+        category: summary.kind === 'friend' ? 'FRIEND' : 'GROUP',
+        members: summary.member_count,
+        balance: ownNet / 100,
+        updated: relativeTime(mostRecent),
+        tint: summary.kind === 'friend' ? 'sky' : ['sage', 'peach', 'lilac', 'sky'][index % 4],
+        initials: makeInitials(name),
+        kind: summary.kind,
+        currency: summary.currency,
+        memberDetails,
+        balanceRows: balanceResponse.balances,
+      } satisfies Group,
+      expenses,
+    }
+  }))
+
+  const activity = snapshots.flatMap(({ group, expenses }) => expenses.map((expense) => ({
+    id: expense.id,
+    title: expense.description,
+    group: group.name,
+    person: group.memberDetails?.find((member) => member.user_id === expense.paid_by_user_id)?.display_name
+      ? (expense.paid_by_user_id === user.id ? 'You' : group.memberDetails.find((member) => member.user_id === expense.paid_by_user_id)!.display_name)
+      : 'A group member',
+    amount: expense.amount_minor / 100,
+    currency: expense.currency,
+    time: relativeTime(expense.created_at),
+    icon: 'expense' as const,
+    color: group.tint,
+  }))).sort((left, right) => {
+    const leftExpense = snapshots.flatMap((snapshot) => snapshot.expenses).find((expense) => expense.id === left.id)
+    const rightExpense = snapshots.flatMap((snapshot) => snapshot.expenses).find((expense) => expense.id === right.id)
+    return new Date(rightExpense?.created_at ?? 0).getTime() - new Date(leftExpense?.created_at ?? 0).getTime()
+  })
+
+  const currentDate = new Date()
+  const chartData: ChartPoint[] = []
+  const chartIndex = new Map<string, ChartPoint>()
+  for (let offset = 5; offset >= 0; offset--) {
+    const monthDate = new Date(currentDate.getFullYear(), currentDate.getMonth() - offset, 1)
+    const key = `${monthDate.getFullYear()}-${String(monthDate.getMonth() + 1).padStart(2, '0')}`
+    const point = { month: monthDate.toLocaleDateString('en-US', { month: 'short' }), owed: 0, owe: 0 }
+    chartData.push(point)
+    chartIndex.set(key, point)
+  }
+  const spendingByGroup = new Map<string, { total: number; color: string }>()
+  for (const { group, expenses } of snapshots) {
+    for (const expense of expenses) {
+      if (expense.currency !== 'USD') continue
+      const amount = expense.amount_minor / 100
+      const monthKey = expense.occurred_at.slice(0, 7)
+      const point = chartIndex.get(monthKey)
+      if (point) {
+        const ownShareMinor = expense.splits.find((split) => split.user_id === user.id)?.owed_minor ?? 0
+        if (expense.paid_by_user_id === user.id) point.owed += (expense.amount_minor - ownShareMinor) / 100
+        else point.owe += ownShareMinor / 100
+      }
+      const bucket = spendingByGroup.get(group.name) ?? { total: 0, color: groupColors[spendingByGroup.size % groupColors.length] }
+      bucket.total += amount
+      spendingByGroup.set(group.name, bucket)
+    }
+  }
+  const totalSpend = [...spendingByGroup.values()].reduce((total, bucket) => total + bucket.total, 0)
+  const breakdown = totalSpend > 0
+    ? [...spendingByGroup.entries()].map(([name, bucket]) => ({ name, value: Math.round((bucket.total / totalSpend) * 100), color: bucket.color }))
+    : []
+
+  return { groups: snapshots.map(({ group }) => group), activity, chartData, breakdown }
+}
 
 function App() {
   const [page, setPage] = useState<Page>('Overview')
-  const [groups, setGroups] = useState(initialGroups)
-  const [activity, setActivity] = useState(initialActivity)
+  const [session, setSessionState] = useState<ApiSession | null>(() => getSession())
+  const [user, setUser] = useState<ApiUser | null>(() => getSession()?.user ?? null)
+  const [authReady, setAuthReady] = useState(true)
+  const [workspaceLoading, setWorkspaceLoading] = useState(false)
+  const [groups, setGroups] = useState<Group[]>([])
+  const [activity, setActivity] = useState<ActivityItem[]>([])
   const [modal, setModal] = useState<Modal>(null)
   const [query, setQuery] = useState('')
   const [navOpen, setNavOpen] = useState(false)
   const searchRef = useRef<HTMLInputElement>(null)
   const [theme, setTheme] = useState<'light' | 'dark'>(() => (localStorage.getItem('splitease-theme') as 'light' | 'dark') || 'light')
   const [settleGroup, setSettleGroup] = useState<Group | null>(null)
+  const [settleCounterpartyId, setSettleCounterpartyId] = useState<string | undefined>()
   const [toast, setToast] = useState('')
+  const [monthlyData, setMonthlyData] = useState<ChartPoint[]>([])
+  const [spendingBreakdown, setSpendingBreakdown] = useState<BreakdownItem[]>([])
+
+  async function refreshWorkspace(activeUser: ApiUser) {
+    setWorkspaceLoading(true)
+    try {
+      const snapshot = await loadWorkspaceData(activeUser)
+      setGroups(snapshot.groups)
+      setActivity(snapshot.activity)
+      setMonthlyData(snapshot.chartData)
+      setSpendingBreakdown(snapshot.breakdown)
+    } finally {
+      setWorkspaceLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+    if (!session) {
+      setAuthReady(true)
+      return () => { cancelled = true }
+    }
+    setWorkspaceLoading(true)
+    void (async () => {
+      try {
+        const activeUser = await api.currentUser()
+        if (cancelled) return
+        setUser(activeUser)
+        const snapshot = await loadWorkspaceData(activeUser)
+        if (cancelled) return
+        setGroups(snapshot.groups)
+        setActivity(snapshot.activity)
+        setMonthlyData(snapshot.chartData)
+        setSpendingBreakdown(snapshot.breakdown)
+      } catch {
+        if (!cancelled) {
+          setSession(null)
+          setUser(null)
+        }
+      } finally {
+        if (!cancelled) {
+          setAuthReady(true)
+          setWorkspaceLoading(false)
+        }
+      }
+    })()
+    return () => { cancelled = true }
+  }, [])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -82,39 +213,87 @@ function App() {
   const totalBalance = useMemo(() => groups.reduce((sum, group) => sum + group.balance, 0), [groups])
   const filteredGroups = groups.filter((group) => group.name.toLowerCase().includes(query.toLowerCase()))
 
-  const startSettle = (group: Group) => {
+  const acceptSession = async (nextSession: ApiSession) => {
+    setSession(nextSession)
+    setSessionState(nextSession)
+    setUser(nextSession.user)
+    setAuthReady(true)
+    try {
+      await refreshWorkspace(nextSession.user)
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Could not load your workspace')
+    }
+  }
+
+  const logout = async () => {
+    try {
+      await api.logout()
+    } finally {
+      setSession(null)
+      setSessionState(null)
+      setUser(null)
+      setGroups([])
+      setActivity([])
+      setPage('Overview')
+    }
+  }
+
+  const startSettle = (group: Group, counterpartyId?: string) => {
     setSettleGroup(group)
+    setSettleCounterpartyId(counterpartyId)
     setModal('settle')
   }
 
-  const completeSettle = () => {
-    if (!settleGroup) return
-    setGroups((current) => current.map((group) => group.id === settleGroup.id ? { ...group, balance: 0, updated: 'Just now' } : group))
-    setActivity((current) => [{
-      id: Date.now(), title: `Settled ${settleGroup.balance < 0 ? 'with Alex' : 'by Jordan'}`,
-      group: settleGroup.name, person: 'You', amount: Math.abs(settleGroup.balance), time: 'Just now', icon: 'settled', color: 'blue',
-    }, ...current])
-    setModal(null)
-    setToast('Settlement recorded in this preview')
+  const completeSettle = async (payerId: string, payeeId: string, amountMinor: number) => {
+    if (!settleGroup || !user || amountMinor <= 0) return
+    try {
+      await api.post<ApiSettlement>(`/api/v1/groups/${settleGroup.id}/settlements`, {
+        idempotency_key: crypto.randomUUID(),
+        payer_user_id: payerId,
+        payee_user_id: payeeId,
+        amount_minor: amountMinor,
+        currency: settleGroup.currency || 'USD',
+      })
+      setModal(null)
+      setToast('Settlement recorded')
+      await refreshWorkspace(user)
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Could not record settlement')
+    }
   }
 
-  const addExpense = (payload: { title: string; groupName: string; amount: number }) => {
-    setActivity((current) => [{
-      id: Date.now(), title: payload.title, group: payload.groupName, person: 'You', amount: payload.amount,
-      time: 'Just now', icon: 'expense', color: 'sage',
-    }, ...current])
-    setGroups((current) => current.map((group) => group.name === payload.groupName ? { ...group, updated: 'Just now' } : group))
-    setModal(null)
-    setToast('Expense added to this preview')
+  const addExpense = async (payload: { title: string; groupId: string; amountMinor: number; splitMethod: 'equal' | 'exact'; paidByUserId: string; splits: ApiSplit[] }) => {
+    if (!user) return
+    const group = groups.find((item) => item.id === payload.groupId)
+    if (!group) return
+    try {
+      await api.post<ApiExpense>(`/api/v1/groups/${group.id}/expenses`, {
+        client_mutation_id: crypto.randomUUID(),
+        description: payload.title,
+        amount_minor: payload.amountMinor,
+        currency: group.currency || 'USD',
+        split_method: payload.splitMethod,
+        paid_by_user_id: payload.paidByUserId,
+        occurred_at: new Date().toISOString(),
+        splits: payload.splits,
+      })
+      setModal(null)
+      setToast('Expense added')
+      await refreshWorkspace(user)
+    } catch (error) {
+      setToast(error instanceof Error ? error.message : 'Could not add expense')
+    }
   }
 
-  const addGroup = (name: string, category: string) => {
-    setGroups((current) => [{
-      id: Date.now(), name, category: category.toUpperCase(), members: 1, balance: 0, updated: 'Just now', tint: category === 'Home' ? 'peach' : 'sage', initials: name.slice(0, 2).toUpperCase(),
-    }, ...current])
+  const addGroup = async (name: string) => {
+    await api.post<ApiGroup>('/api/v1/groups', { name, currency: 'USD', member_ids: [] })
     setModal(null)
-    setToast(`${name} is ready for your first expense`)
+    setToast(`${name} created`)
+    if (user) await refreshWorkspace(user)
   }
+
+  if (!authReady) return <div className="auth-loading">Connecting to SplitEase...</div>
+  if (!session || !user) return <AuthScreen onAuthenticated={acceptSession} />
 
   return (
     <div className="app-shell">
@@ -126,7 +305,7 @@ function App() {
 
         <div className="workspace-switcher">
           <div className="workspace-avatar">J</div>
-          <div className="workspace-copy"><strong>Jordan's space</strong><span>Personal workspace</span></div>
+          <div className="workspace-copy"><strong>{user.display_name}'s space</strong><span>{user.email}</span></div>
           <ChevronDown size={15} />
         </div>
 
@@ -152,9 +331,9 @@ function App() {
           <NavItem icon={<Settings />} label="Settings" active={page === 'Settings'} onClick={() => setPage('Settings')} />
           <button className="help-link" onClick={() => setToast('Help center is coming soon')}><CircleHelp size={17} /> Help & support</button>
           <div className="profile-row">
-            <div className="avatar avatar-you">JD</div>
-            <div className="profile-copy"><strong>Jordan Davis</strong><span>Free plan</span></div>
-            <button className="icon-button mini" title="Profile options" onClick={() => setPage('Settings')}><MoreHorizontal size={18} /></button>
+            <div className="avatar avatar-you">{makeInitials(user.display_name)}</div>
+            <div className="profile-copy"><strong>{user.display_name}</strong><span>{user.is_pro ? 'Pro plan' : 'Free plan'}</span></div>
+            <button className="icon-button mini" title="Sign out" aria-label="Sign out" onClick={() => void logout()}><LogOut size={16} /></button>
           </div>
         </div>
       </aside>
@@ -183,25 +362,25 @@ function App() {
             <label className="search-box"><Search size={17} /><input ref={searchRef} aria-label="Search groups" placeholder="Search groups..." value={query} onChange={(event) => setQuery(event.target.value)} /><kbd>{searchShortcut}</kbd></label>
             <button className="icon-button theme-toggle" title={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} aria-label={`Switch to ${theme === 'light' ? 'dark' : 'light'} mode`} onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</button>
             <button className="icon-button notification-button" title="Notifications" aria-label="Notifications" onClick={() => setToast('You are all caught up')}><Bell size={18} /><span /></button>
-            <div className="avatar avatar-you top-avatar">JD</div>
+            <div className="avatar avatar-you top-avatar" title={user.email}>{makeInitials(user.display_name)}</div>
           </div>
         </header>
 
         <div className="page-wrap">
-          {page === 'Overview' && <Overview groups={filteredGroups} activity={activity} totalBalance={totalBalance} onAdd={() => setModal('expense')} onNewGroup={() => setModal('group')} onSettle={startSettle} onPage={setPage} />}
+          {page === 'Overview' && <Overview groups={filteredGroups} activity={activity} totalBalance={totalBalance} chartData={monthlyData} user={user} onAdd={() => setModal('expense')} onNewGroup={() => setModal('group')} onSettle={startSettle} onPage={setPage} />}
           {page === 'Groups' && <GroupsPage groups={filteredGroups} query={query} setQuery={setQuery} onAdd={() => setModal('group')} onSettle={startSettle} />}
           {page === 'Activity' && <ActivityPage activity={activity} />}
-          {page === 'Reports' && <ReportsPage totalBalance={totalBalance} />}
+          {page === 'Reports' && <ReportsPage totalBalance={totalBalance} chartData={monthlyData} breakdown={spendingBreakdown} />}
           {page === 'Settings' && <SettingsPage theme={theme} setTheme={setTheme} onToast={setToast} />}
         </div>
       </main>
 
-      <div className="preview-ribbon"><span className="pulse-dot" /> LOCAL PREVIEW <span className="ribbon-divider">·</span> API NOT CONNECTED</div>
+      <div className="preview-ribbon"><span className="pulse-dot" /> LIVE API <span className="ribbon-divider">·</span>{workspaceLoading ? 'SYNCING' : 'CONNECTED'}</div>
       {toast && <div className="toast" role="status"><Check size={16} />{toast}<button onClick={() => setToast('')} aria-label="Dismiss notification"><X size={15} /></button></div>}
       {modal && <ModalShell onClose={() => setModal(null)}>
-        {modal === 'expense' && <ExpenseModal groups={groups} onClose={() => setModal(null)} onSave={addExpense} />}
+        {modal === 'expense' && <ExpenseModal groups={groups} user={user} onClose={() => setModal(null)} onSave={addExpense} />}
         {modal === 'group' && <GroupModal onClose={() => setModal(null)} onSave={addGroup} />}
-        {modal === 'settle' && settleGroup && <SettleModal group={settleGroup} onClose={() => setModal(null)} onConfirm={completeSettle} />}
+        {modal === 'settle' && settleGroup && <SettleModal group={settleGroup} user={user} initialCounterpartyId={settleCounterpartyId} onClose={() => setModal(null)} onConfirm={completeSettle} />}
       </ModalShell>}
     </div>
   )
@@ -211,21 +390,21 @@ function NavItem({ icon, label, active, onClick, count }: { icon: React.ReactNod
   return <button className={`nav-item ${active ? 'active' : ''}`} aria-label={label} title={label} onClick={onClick}>{icon}<span>{label}</span>{count !== undefined && <small>{count}</small>}</button>
 }
 
-function Overview({ groups, activity, totalBalance, onAdd, onNewGroup, onSettle, onPage }: {
-  groups: Group[]; activity: ActivityItem[]; totalBalance: number; onAdd: () => void; onNewGroup: () => void; onSettle: (group: Group) => void; onPage: (page: Page) => void
+function Overview({ groups, activity, totalBalance, chartData, user, onAdd, onNewGroup, onSettle, onPage }: {
+  groups: Group[]; activity: ActivityItem[]; totalBalance: number; chartData: ChartPoint[]; user: ApiUser; onAdd: () => void; onNewGroup: () => void; onSettle: (group: Group, counterpartyId?: string) => void; onPage: (page: Page) => void
 }) {
   const owed = groups.reduce((sum, group) => sum + Math.max(0, group.balance), 0)
   const owing = groups.reduce((sum, group) => sum + Math.max(0, -group.balance), 0)
   return <>
     <div className="welcome-row">
-      <div><div className="eyebrow"><span className="eyebrow-line" /> FRIDAY, SEPTEMBER 25, 2026</div><h1>Good afternoon, Jordan<span className="wave">.</span></h1><p className="welcome-subtitle">Here's the shape of things across your circles.</p></div>
+      <div><div className="eyebrow"><span className="eyebrow-line" /> {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }).toUpperCase()}</div><h1>Good afternoon, {user.display_name.split(' ')[0]}<span className="wave">.</span></h1><p className="welcome-subtitle">Here's the shape of things across your circles.</p></div>
       <div className="header-buttons"><button className="button button-quiet" onClick={onNewGroup}><Plus size={16} /> New group</button><button className="button button-primary" onClick={onAdd}><Plus size={17} /> Add an expense</button></div>
     </div>
 
     <section className="balance-grid" aria-label="Balance summary">
       <div className="balance-card balance-total"><div className="balance-card-top"><span className="balance-label">YOUR NET BALANCE</span><span className="status-pill"><span className="status-dot" />ALL GROUPS</span></div><div className={`balance-amount ${totalBalance >= 0 ? 'positive-text' : 'negative-text'}`}>{totalBalance >= 0 ? '+' : '-'}{money(totalBalance)}</div><div className="balance-card-foot"><span>Across {groups.length} active groups</span><span className="balance-trend"><ArrowUpRight size={14} /> 12.8%</span></div><div className="total-watermark"><ArrowLeftRight size={76} strokeWidth={1} /></div></div>
-      <div className="balance-card balance-owed"><div className="balance-card-top"><span className="balance-label">YOU ARE OWED</span><span className="balance-icon owed-icon"><ArrowDownLeft size={17} /></span></div><div className="balance-amount">{money(owed)}</div><div className="balance-card-foot"><span>From 4 people</span><button onClick={() => onPage('Groups')}>View details <ArrowRight size={13} /></button></div><div className="mini-bars"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></div>
-      <div className="balance-card balance-owing"><div className="balance-card-top"><span className="balance-label">YOU OWE</span><span className="balance-icon owing-icon"><ArrowUpRight size={17} /></span></div><div className="balance-amount">{money(owing)}</div><div className="balance-card-foot"><span>Across 3 groups</span><button onClick={() => onPage('Groups')}>Settle up <ArrowRight size={13} /></button></div><div className="owing-decoration"><span /><span /><span /></div></div>
+      <div className="balance-card balance-owed"><div className="balance-card-top"><span className="balance-label">YOU ARE OWED</span><span className="balance-icon owed-icon"><ArrowDownLeft size={17} /></span></div><div className="balance-amount">{money(owed)}</div><div className="balance-card-foot"><span>Across your groups</span><button onClick={() => onPage('Groups')}>View details <ArrowRight size={13} /></button></div><div className="mini-bars"><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /><i /></div></div>
+      <div className="balance-card balance-owing"><div className="balance-card-top"><span className="balance-label">YOU OWE</span><span className="balance-icon owing-icon"><ArrowUpRight size={17} /></span></div><div className="balance-amount">{money(owing)}</div><div className="balance-card-foot"><span>Across your groups</span><button onClick={() => onPage('Groups')}>Settle up <ArrowRight size={13} /></button></div><div className="owing-decoration"><span /><span /><span /></div></div>
     </section>
 
     <div className="dashboard-grid">
@@ -261,10 +440,20 @@ function Overview({ groups, activity, totalBalance, onAdd, onNewGroup, onSettle,
 
         <section className="panel people-panel">
           <div className="panel-heading"><div><div className="panel-kicker">OPEN BALANCES</div><h2>People to settle with</h2></div><button className="icon-button mini" title="Balance options"><MoreHorizontal size={18} /></button></div>
-          <PersonBalance name="Maya Chen" handle="Copenhagen weekend" initials="MC" amount={86.5} tint="sage" onClick={() => onSettle({ ...groups[0], balance: 86.5 })} />
-          <PersonBalance name="Alex Rivera" handle="Apartment 4B" initials="AR" amount={-48.25} tint="peach" onClick={() => onSettle({ ...groups[1], balance: -48.25 })} />
-          <PersonBalance name="Leo Park" handle="Sunday supper club" initials="LP" amount={162.1} tint="lilac" onClick={() => onSettle({ ...groups[2], balance: 162.1 })} />
-          <button className="settle-all" onClick={() => onSettle(groups.find((group) => group.balance !== 0) || groups[0])}><ArrowLeftRight size={15} />Review all balances</button>
+          {groups.flatMap((group) => {
+            const ownNet = group.balanceRows?.find((balance) => balance.user_id === user.id)?.net_minor ?? 0
+            return (group.balanceRows || [])
+            .filter((balance) => balance.user_id !== user.id && balance.net_minor !== 0 && ownNet * balance.net_minor < 0)
+            .map((balance) => {
+              const person = group.memberDetails?.find((member) => member.user_id === balance.user_id)
+              return <PersonBalance key={`${group.id}:${balance.user_id}`} name={person?.display_name || 'Group member'} handle={group.name} initials={makeInitials(person?.display_name || 'GM')} amount={-balance.net_minor / 100} tint={group.tint} onClick={() => onSettle(group, balance.user_id)} />
+            })
+          }).slice(0, 4)}
+          {groups.every((group) => {
+            const ownNet = group.balanceRows?.find((balance) => balance.user_id === user.id)?.net_minor ?? 0
+            return ownNet === 0 || (group.balanceRows || []).every((balance) => balance.user_id === user.id || balance.net_minor === 0 || ownNet * balance.net_minor >= 0)
+          }) && <p className="empty-balances">No open balances right now. A rare and lovely thing.</p>}
+          {groups.some((group) => group.balance !== 0) && <button className="settle-all" onClick={() => onSettle(groups.find((group) => group.balance !== 0)!)}><ArrowLeftRight size={15} />Review all balances</button>}
         </section>
       </div>
     </div>
@@ -313,7 +502,7 @@ function ActivityPage({ activity }: { activity: ActivityItem[] }) {
   </>
 }
 
-function ReportsPage({ totalBalance }: { totalBalance: number }) {
+function ReportsPage({ totalBalance, chartData, breakdown }: { totalBalance: number; chartData: ChartPoint[]; breakdown: BreakdownItem[] }) {
   return <><div className="page-title-row"><div><div className="eyebrow"><span className="eyebrow-line" /> YOUR MONEY, IN CONTEXT</div><h1>Reports</h1><p className="welcome-subtitle">Patterns are more useful when everyone can see them.</p></div><button className="button button-quiet"><ChevronLeft size={15} /> Sep 2026 <ChevronRight size={15} /></button></div>
     <div className="reports-grid"><section className="panel report-chart-panel"><div className="panel-heading"><div><div className="panel-kicker">SHARED SPENDING</div><h2>Where it went</h2></div><button className="select-button">This year <ChevronDown size={14} /></button></div><div className="donut-wrap"><div className="donut-chart"><ResponsiveContainer width="100%" height="100%"><PieChart><Pie data={breakdown} dataKey="value" nameKey="name" innerRadius="70%" outerRadius="94%" paddingAngle={3} stroke="none">{breakdown.map((entry) => <Cell key={entry.name} fill={entry.color} />)}</Pie><Tooltip formatter={(value) => `${value}%`} contentStyle={{ background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: 10, color: 'var(--text)' }} /></PieChart></ResponsiveContainer><div className="donut-center"><span>NET POSITION</span><strong className={totalBalance >= 0 ? 'positive-text' : 'negative-text'}>{totalBalance >= 0 ? '+' : '-'}{money(totalBalance)}</strong></div></div><div className="breakdown-list">{breakdown.map((item) => <div className="breakdown-item" key={item.name}><span><i style={{ background: item.color }} />{item.name}</span><strong>{item.value}%</strong></div>)}</div></div></section>
       <section className="panel report-insight"><div className="panel-kicker">A SMALL OBSERVATION</div><div className="insight-mark"><SparkleMark /></div><h2>Good things are shared.</h2><p>Trips make up nearly half of your shared spending this year. Your group of six has split <b>$2,840</b> across 14 expenses.</p><div className="insight-rule" /><div className="insight-stat"><span>Top shared category</span><strong>Travel <ArrowUpRight size={14} /></strong></div></section></div>
@@ -346,37 +535,97 @@ function ModalShell({ children, onClose }: { children: React.ReactNode; onClose:
   return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}><div className="modal" role="dialog" aria-modal="true">{children}</div></div>
 }
 
-function ExpenseModal({ groups, onClose, onSave }: { groups: Group[]; onClose: () => void; onSave: (payload: { title: string; groupName: string; amount: number }) => void }) {
+function ExpenseModal({ groups, user, onClose, onSave }: { groups: Group[]; user: ApiUser; onClose: () => void; onSave: (payload: { title: string; groupId: string; amountMinor: number; splitMethod: 'equal' | 'exact'; paidByUserId: string; splits: ApiSplit[] }) => Promise<void> }) {
   const [step, setStep] = useState(1)
   const [title, setTitle] = useState('')
   const [amount, setAmount] = useState('')
-  const [groupName, setGroupName] = useState(groups[0]?.name || '')
-  const [method, setMethod] = useState('Equal split')
+  const [groupId, setGroupId] = useState(String(groups[0]?.id || ''))
+  const [memberIds, setMemberIds] = useState<string[]>(groups[0]?.memberDetails?.map((member) => member.user_id) || [user.id])
+  const [paidByUserId, setPaidByUserId] = useState(user.id)
+  const [method, setMethod] = useState<'equal' | 'exact'>('equal')
+  const [exactAmounts, setExactAmounts] = useState<Record<string, string>>({})
   const [error, setError] = useState('')
+  const [saving, setSaving] = useState(false)
   const parsedAmount = Number(amount)
-  const next = () => {
+  const amountMinor = Math.round(parsedAmount * 100)
+  const selectedGroup = groups.find((group) => String(group.id) === groupId)
+  const members = selectedGroup?.memberDetails || []
+  const orderedMemberIds = [...memberIds].sort()
+  const baseShare = orderedMemberIds.length ? Math.floor(amountMinor / orderedMemberIds.length) : 0
+  const remainder = orderedMemberIds.length ? amountMinor % orderedMemberIds.length : 0
+  const equalSplits = orderedMemberIds.map((id, index) => ({ user_id: id, owed_minor: baseShare + (index < remainder ? 1 : 0) }))
+  const exactSplits = orderedMemberIds.map((id) => ({ user_id: id, owed_minor: Math.max(0, Math.round(Number(exactAmounts[id] || 0) * 100)) }))
+  const splits = method === 'equal' ? equalSplits : exactSplits
+  const splitsReconcile = splits.length > 0 && splits.reduce((sum, split) => sum + split.owed_minor, 0) === amountMinor
+  const selectedMemberKey = memberIds.slice().sort().join(',')
+
+  useEffect(() => {
+    if (method !== 'exact' || !orderedMemberIds.length) return
+    const base = parsedAmount > 0 ? parsedAmount / orderedMemberIds.length : 0
+    setExactAmounts((current) => Object.fromEntries(orderedMemberIds.map((id) => [id, current[id] ?? base.toFixed(2)])))
+  }, [method, selectedMemberKey, amount])
+
+  const next = async () => {
     if (step === 1 && (!title.trim() || !parsedAmount || parsedAmount <= 0)) { setError('Add a description and a valid amount to continue.'); return }
+    if (step === 2 && (!selectedGroup || memberIds.length === 0)) { setError('Choose a group and at least one participant.'); return }
+    if (step === 3 && !splitsReconcile) { setError('Split amounts must add up to the full expense amount.'); return }
     setError('')
     if (step < 3) setStep(step + 1)
-    else onSave({ title: title.trim(), groupName, amount: parsedAmount })
+    else {
+      setSaving(true)
+      try {
+        await onSave({ title: title.trim(), groupId, amountMinor, splitMethod: method, paidByUserId, splits })
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : 'Could not save expense')
+      } finally {
+        setSaving(false)
+      }
+    }
   }
-  return <><div className="modal-top"><div><div className="modal-eyebrow">NEW EXPENSE · {String(step).padStart(2, '0')} / 03</div><h2>{step === 1 ? 'What did you spend?' : step === 2 ? 'Who was it for?' : 'How should it split?'}</h2><p>{step === 1 ? 'A few details and you’re all square.' : step === 2 ? 'Choose the circle this belongs to.' : 'Everyone gets a fair share by default.'}</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="step-track"><span className={step >= 1 ? 'done' : ''} /><span className={step >= 2 ? 'done' : ''} /><span className={step >= 3 ? 'done' : ''} /></div>
-    {step === 1 && <div className="modal-fields"><label>DESCRIPTION<input autoFocus placeholder="e.g. Dinner at Bar Moro" value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>AMOUNT<div className="money-input"><span>$</span><input inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^0-9.]/g, ''))} /></div></label><label>PAID BY<div className="select-wrap"><select defaultValue="You"><option>You</option><option>Maya Chen</option><option>Alex Rivera</option><option>Leo Park</option></select><ChevronDown size={15} /></div></label></div>}
-    {step === 2 && <div className="modal-fields"><label>GROUP<div className="select-wrap"><select value={groupName} onChange={(event) => setGroupName(event.target.value)}>{groups.map((group) => <option key={group.id}>{group.name}</option>)}</select><ChevronDown size={15} /></div></label><div className="member-select-label">SPLIT WITH</div><div className="member-check-list">{[['JD', 'You', true], ['MC', 'Maya Chen', true], ['AR', 'Alex Rivera', true], ['LP', 'Leo Park', true]].map(([initials, name, checked]) => <div className="member-check" key={String(name)}><div className={`avatar ${initials === 'JD' ? 'avatar-you' : 'person-avatar sage'}`}>{initials}</div><span>{name}</span><span className="check-mark">{checked && <Check size={14} />}</span></div>)}</div></div>}
-    {step === 3 && <div className="modal-fields"><div className="split-options">{['Equal split', 'Exact amounts', 'By percentage'].map((name, index) => <button key={name} className={`split-option ${method === name ? 'chosen' : ''}`} onClick={() => setMethod(name)}><span className="split-radio">{method === name && <i />}</span><span><strong>{name}</strong><small>{index === 0 ? 'Split evenly between 4 people' : index === 1 ? 'Enter each person’s share' : 'Choose a percentage for each'}</small></span></button>)}</div><div className="split-preview"><span><Users size={15} /> 4 people sharing</span><strong>{money(parsedAmount / 4)} <small>each</small></strong></div><div className="demo-note"><ShieldCheck size={15} /> Changes here are saved only in this local preview.</div></div>}
-    {error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button button-quiet" onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? 'Cancel' : 'Back'}</button><button className="button button-primary" onClick={next}>{step === 3 ? 'Add expense' : 'Continue'} <ArrowRight size={15} /></button></div></>
+  return <><div className="modal-top"><div><div className="modal-eyebrow">NEW EXPENSE · {String(step).padStart(2, '0')} / 03</div><h2>{step === 1 ? 'What did you spend?' : step === 2 ? 'Who was it for?' : 'How should it split?'}</h2><p>{step === 1 ? 'A few details and you’re all square.' : step === 2 ? 'Choose a group and the people sharing it.' : 'Check the shares before saving.'}</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="step-track"><span className={step >= 1 ? 'done' : ''} /><span className={step >= 2 ? 'done' : ''} /><span className={step >= 3 ? 'done' : ''} /></div>
+    {step === 1 && <div className="modal-fields"><label>DESCRIPTION<input autoFocus placeholder="e.g. Dinner at Bar Moro" value={title} onChange={(event) => setTitle(event.target.value)} /></label><label>AMOUNT<div className="money-input"><span>{selectedGroup?.currency || 'USD'}</span><input inputMode="decimal" placeholder="0.00" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^0-9.]/g, ''))} /></div></label><div className="demo-note"><ShieldCheck size={15} /> This expense will be saved to your signed-in SplitEase account.</div></div>}
+    {step === 2 && <div className="modal-fields"><label>GROUP OR FRIEND<div className="select-wrap"><select value={groupId} onChange={(event) => { const nextGroup = groups.find((group) => String(group.id) === event.target.value); setGroupId(event.target.value); setMemberIds(nextGroup?.memberDetails?.map((member) => member.user_id) || []); setPaidByUserId(user.id) }}>{groups.map((group) => <option key={group.id} value={group.id}>{group.kind === 'friend' ? `Friend · ${group.name}` : group.name}</option>)}</select><ChevronDown size={15} /></div></label><label>PAID BY<div className="select-wrap"><select value={paidByUserId} onChange={(event) => setPaidByUserId(event.target.value)}>{members.map((member) => <option key={member.user_id} value={member.user_id}>{member.display_name}{member.user_id === user.id ? ' (you)' : ''}</option>)}</select><ChevronDown size={15} /></div></label><div className="member-select-label">SPLIT WITH</div><div className="member-check-list">{members.map((member) => <button type="button" className="member-check" key={member.user_id} onClick={() => setMemberIds((current) => current.includes(member.user_id) ? current.filter((id) => id !== member.user_id) : [...current, member.user_id])}><div className={`avatar ${member.user_id === user.id ? 'avatar-you' : 'person-avatar sage'}`}>{makeInitials(member.display_name)}</div><span>{member.display_name}{member.user_id === user.id ? ' (you)' : ''}</span><span className={`check-mark ${memberIds.includes(member.user_id) ? '' : 'unchecked'}`}>{memberIds.includes(member.user_id) && <Check size={14} />}</span></button>)}</div></div>}
+    {step === 3 && <div className="modal-fields"><div className="split-options">{([{ value: 'equal', label: 'Equal split', detail: 'Distribute any extra cents fairly' }, { value: 'exact', label: 'Exact amounts', detail: 'Enter each person’s share' }] as const).map((option) => <button type="button" key={option.value} className={`split-option ${method === option.value ? 'chosen' : ''}`} onClick={() => setMethod(option.value)}><span className="split-radio">{method === option.value && <i />}</span><span><strong>{option.label}</strong><small>{option.detail}</small></span></button>)}</div>{method === 'exact' && orderedMemberIds.map((id) => <label className="exact-share" key={id}>{members.find((member) => member.user_id === id)?.display_name || 'Member'}<div className="money-input"><span>{selectedGroup?.currency || 'USD'}</span><input inputMode="decimal" value={exactAmounts[id] ?? ''} onChange={(event) => setExactAmounts((current) => ({ ...current, [id]: event.target.value.replace(/[^0-9.]/g, '') }))} /></div></label>)}<div className="split-preview"><span><Users size={15} /> {memberIds.length} people · total {money(amountMinor / 100)}</span><strong>{splitsReconcile ? 'Balanced' : `${money(Math.abs(amountMinor - splits.reduce((sum, split) => sum + split.owed_minor, 0)) / 100)} left`} <small>{method === 'equal' ? 'each' : ''}</small></strong></div></div>}
+    {error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button button-quiet" onClick={() => step === 1 ? onClose() : setStep(step - 1)}>{step === 1 ? 'Cancel' : 'Back'}</button><button className="button button-primary" disabled={saving || groups.length === 0} onClick={() => void next()}>{saving ? 'Saving...' : step === 3 ? 'Add expense' : 'Continue'} <ArrowRight size={15} /></button></div></>
 }
 
-function GroupModal({ onClose, onSave }: { onClose: () => void; onSave: (name: string, category: string) => void }) {
+function GroupModal({ onClose, onSave }: { onClose: () => void; onSave: (name: string) => Promise<void> }) {
   const [name, setName] = useState('')
-  const [category, setCategory] = useState('Trip')
   const [error, setError] = useState('')
-  return <><div className="modal-top"><div><div className="modal-eyebrow">MAKE A LITTLE SPACE</div><h2>Start a group</h2><p>For the people you share things with.</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="modal-fields"><label>GROUP NAME<input autoFocus placeholder="e.g. Summer house" value={name} onChange={(event) => setName(event.target.value)} /></label><label>WHAT'S IT FOR?<div className="select-wrap"><select value={category} onChange={(event) => setCategory(event.target.value)}><option>Trip</option><option>Home</option><option>Food & drink</option><option>Couple</option><option>Other</option></select><ChevronDown size={15} /></div></label><div className="group-preview"><div className={`group-avatar ${category === 'Home' ? 'peach' : 'sage'}`}>{name.slice(0, 2).toUpperCase() || 'SE'}</div><div><strong>{name || 'Your new group'}</strong><span>{category} · USD · Just you for now</span></div></div></div>{error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" onClick={() => name.trim() ? onSave(name.trim(), category) : setError('Give your group a name first.')}>Create group <ArrowRight size={15} /></button></div></>
+  const [saving, setSaving] = useState(false)
+  const submit = async () => {
+    if (!name.trim()) { setError('Give your group a name first.'); return }
+    setSaving(true)
+    setError('')
+    try {
+      await onSave(name.trim())
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : 'Could not create group')
+    } finally {
+      setSaving(false)
+    }
+  }
+  return <><div className="modal-top"><div><div className="modal-eyebrow">MAKE A LITTLE SPACE</div><h2>Start a group</h2><p>Invite members and share expenses in one place.</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="modal-fields"><label>GROUP NAME<input autoFocus placeholder="e.g. Summer house" value={name} onChange={(event) => setName(event.target.value)} /></label><div className="group-preview"><div className="group-avatar sage">{makeInitials(name || 'SE')}</div><div><strong>{name || 'Your new group'}</strong><span>USD · You can add members next</span></div></div></div>{error && <p className="form-error" role="alert">{error}</p>}<div className="modal-actions"><button className="button button-quiet" onClick={onClose}>Cancel</button><button className="button button-primary" disabled={saving} onClick={() => void submit()}>{saving ? 'Creating...' : 'Create group'} <ArrowRight size={15} /></button></div></>
 }
 
-function SettleModal({ group, onClose, onConfirm }: { group: Group; onClose: () => void; onConfirm: () => void }) {
-  const amount = Math.abs(group.balance)
-  return <><div className="modal-top"><div><div className="modal-eyebrow">CLEAR THE AIR (AND THE BALANCE)</div><h2>Settle up</h2><p>Confirm the amount and how you’d like to close it out.</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="settle-summary"><div className="settle-group-icon"><ArrowLeftRight size={19} /></div><div><span>{group.name}</span><strong>{group.balance < 0 ? 'You owe Alex Rivera' : 'Jordan owes you'}</strong></div><b className={group.balance < 0 ? 'negative-text' : 'positive-text'}>{group.balance < 0 ? '-' : '+'}{money(amount)}</b></div><div className="payment-methods"><span className="member-select-label">PAYMENT METHOD</span><div className="payment-method selected"><div className="payment-brand stripe-brand">S</div><span><strong>Stripe test flow</strong><small>Mock payment · no charge</small></span><span className="radio-dot active" /></div><div className="payment-method"><div className="payment-brand wallet-brand"><Wallet size={16} /></div><span><strong>Record a cash payment</strong><small>Mark as settled in this preview</small></span><span className="radio-dot" /></div><div className="payment-badges"><span className="stripe-badge">stripe</span><span className="apple-badge">Pay</span><span className="gpay-badge"><b>G</b> Pay</span><small>Payment badges shown for design preview</small></div></div><div className="demo-note"><ShieldCheck size={15} /> No real payment is processed. API and payment provider are not connected.</div><div className="modal-actions"><button className="button button-quiet" onClick={onClose}>Not now</button><button className="button button-primary" onClick={onConfirm}>Record settlement <Check size={15} /></button></div></>
+function SettleModal({ group, user, initialCounterpartyId, onClose, onConfirm }: { group: Group; user: ApiUser; initialCounterpartyId?: string; onClose: () => void; onConfirm: (payerId: string, payeeId: string, amountMinor: number) => Promise<void> }) {
+  const ownNet = group.balanceRows?.find((balance) => balance.user_id === user.id)?.net_minor || 0
+  const otherBalances = (group.balanceRows || []).filter((balance) => balance.user_id !== user.id && (ownNet < 0 ? balance.net_minor > 0 : balance.net_minor < 0))
+  const defaultCounterparty = otherBalances[0]
+  const [counterpartyId, setCounterpartyId] = useState(initialCounterpartyId || defaultCounterparty?.user_id || '')
+  const [amount, setAmount] = useState(String(Math.abs(ownNet) / 100))
+  const [saving, setSaving] = useState(false)
+  const counterparty = otherBalances.find((balance) => balance.user_id === counterpartyId)
+  const amountMinor = Math.round(Number(amount) * 100)
+  const maxMinor = Math.min(Math.abs(ownNet), Math.abs(counterparty?.net_minor || 0))
+  const validAmount = amountMinor > 0 && amountMinor <= maxMinor
+  const confirm = async () => {
+    if (!counterparty || !validAmount) return
+    setSaving(true)
+    await onConfirm(ownNet < 0 ? user.id : counterparty.user_id, ownNet < 0 ? counterparty.user_id : user.id, amountMinor)
+    setSaving(false)
+  }
+  return <><div className="modal-top"><div><div className="modal-eyebrow">CLEAR THE AIR (AND THE BALANCE)</div><h2>Settle up</h2><p>Record a manual payment in the group ledger.</p></div><button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button></div><div className="settle-summary"><div className="settle-group-icon"><ArrowLeftRight size={19} /></div><div><span>{group.name}</span><strong>{ownNet < 0 ? 'You owe' : 'You are owed'}</strong></div><b className={ownNet < 0 ? 'negative-text' : 'positive-text'}>{ownNet < 0 ? '-' : '+'}{money(ownNet / 100)}</b></div><div className="modal-fields"><label>SETTLE WITH<div className="select-wrap"><select value={counterpartyId} onChange={(event) => setCounterpartyId(event.target.value)}>{otherBalances.map((balance) => <option key={balance.user_id} value={balance.user_id}>{group.memberDetails?.find((member) => member.user_id === balance.user_id)?.display_name || 'Group member'} · {money(balance.net_minor / 100)} {balance.net_minor > 0 ? 'owed' : 'owes'}</option>)}</select><ChevronDown size={15} /></div></label><label>AMOUNT<div className="money-input"><span>{group.currency || 'USD'}</span><input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value.replace(/[^0-9.]/g, ''))} /></div><small>Up to {money(maxMinor / 100)} for this balance.</small></label>{!otherBalances.length && <p className="form-error">No opposite balance is available to settle in this group.</p>}</div><div className="demo-note"><ShieldCheck size={15} /> This records a manual settlement. No card payment is processed.</div><div className="modal-actions"><button className="button button-quiet" onClick={onClose}>Not now</button><button className="button button-primary" disabled={saving || !validAmount} onClick={() => void confirm()}>{saving ? 'Recording...' : 'Record settlement'} <Check size={15} /></button></div></>
 }
 
 function SparkleMark() { return <span className="sparkle-mark">✳</span> }
